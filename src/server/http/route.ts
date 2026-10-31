@@ -65,13 +65,22 @@ export function clientIp(req: Request): string {
 
 /**
  * Protection CSRF : en plus du cookie SameSite=Lax, toute requête qui modifie
- * l'état doit venir de l'application elle-même (en-tête Origin identique à APP_URL).
+ * l'état doit venir de l'application elle-même : l'en-tête Origin (posé par le
+ * navigateur, impossible à falsifier depuis un autre site) doit être APP_URL ou
+ * l'hôte même de la requête (utile pour les déploiements de prévisualisation Vercel).
  */
 function checkOrigin(req: Request): void {
   if (SAFE_METHODS.has(req.method)) return;
   const origin = req.headers.get("origin");
-  const expected = process.env.APP_URL ? new URL(process.env.APP_URL).origin : new URL(req.url).origin;
-  if (origin !== expected) throw forbidden("BAD_ORIGIN");
+  if (!origin) throw forbidden("BAD_ORIGIN");
+  const allowed = new Set<string>();
+  if (process.env.APP_URL) allowed.add(new URL(process.env.APP_URL).origin);
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (host) {
+    const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(":", "");
+    allowed.add(`${proto}://${host}`);
+  }
+  if (!allowed.has(origin)) throw forbidden("BAD_ORIGIN");
 }
 
 /**

@@ -55,16 +55,15 @@ export async function loadHours(tx: Tx | Database): Promise<WeeklyHours> {
 }
 
 export async function loadSnapshot(tx: Tx | Database): Promise<LaundrySnapshot> {
-  const [machineRows, cycleRows, reservationRows, settings, hours] = await Promise.all([
-    tx.select().from(t.machines).orderBy(asc(t.machines.number)),
-    tx.select().from(t.cycles).where(eq(t.cycles.status, "running")),
-    tx
-      .select()
-      .from(t.reservations)
-      .where(inArray(t.reservations.status, [...ACTIVE_RESERVATION_STATUSES])),
-    loadSettings(tx),
-    loadHours(tx),
-  ]);
+  // Requêtes en séquence : une transaction n'a qu'une connexion, qui les exécute de toute façon l'une après l'autre.
+  const machineRows = await tx.select().from(t.machines).orderBy(asc(t.machines.number));
+  const cycleRows = await tx.select().from(t.cycles).where(eq(t.cycles.status, "running"));
+  const reservationRows = await tx
+    .select()
+    .from(t.reservations)
+    .where(inArray(t.reservations.status, [...ACTIVE_RESERVATION_STATUSES]));
+  const settings = await loadSettings(tx);
+  const hours = await loadHours(tx);
   return {
     machines: machineRows.map((m): Machine => ({
       id: m.id,

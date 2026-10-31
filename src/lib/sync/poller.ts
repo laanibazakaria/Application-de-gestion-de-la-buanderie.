@@ -53,6 +53,12 @@ export class StatePoller {
     private readonly listeners: PollerListeners,
   ) {}
 
+  /** État déjà connu (rendu avec la page) : le premier rafraîchissement enverra sa version. */
+  seed(state: LaundryStateView, etag: string): void {
+    this.state = state;
+    this.etag = etag;
+  }
+
   start(): void {
     if (this.running) return;
     this.running = true;

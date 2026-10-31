@@ -192,3 +192,26 @@ describe("échéances traitées au rafraîchissement", () => {
     );
   });
 });
+
+describe("machine hors service dans l'état", () => {
+  it("n'affiche que les réservations qui la visaient, pas les « première disponible »", async () => {
+    await fillAllMachines();
+    const admin = await adminSession();
+    const b = await studentSession();
+    const a = await studentSession();
+    await call(reservations.POST, { token: b.token, body: { targetMachineId: 7 } });
+    await call(reservations.POST, { token: a.token, body: { targetMachineId: null } });
+    const [c] = await sql<{ id: string }>("select id from cycles where machine_id = 7");
+    const stop = await import("@/app/api/admin/cycles/[id]/stop/route");
+    const disable = await import("@/app/api/admin/machines/[id]/disable/route");
+    await call(stop.POST, { token: admin.token, params: { id: c!.id }, body: { mode: "cancelled" } }); // b appelé sur la 7
+    await call(disable.POST, { method: "POST", token: admin.token, params: { id: "7" } }); // b revient en file
+    const { state: st } = await getState(admin.token);
+    const m7 = st.machines[6]!;
+    expect(m7.status).toBe("out_of_service");
+    expect(m7.queue.map((q) => [q.student?.id, q.isAny, q.notice])).toEqual([
+      [b.id, false, "machine_out_of_service"],
+    ]);
+    expect(st.machines[0]!.queue.some((q) => q.student?.id === a.id && q.isAny)).toBe(true);
+  });
+});

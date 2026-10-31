@@ -40,3 +40,10 @@ export function getDb(): Database {
 export function createDb(pool: Pool): Database {
   return drizzle(pool, { schema });
 }
+
+/** Ferme le pool global (scripts en ligne de commande). */
+export async function closeDb(): Promise<void> {
+  await globalForDb.__buanderiePool?.end();
+  globalForDb.__buanderiePool = undefined;
+  globalForDb.__buanderieDb = undefined;
+}

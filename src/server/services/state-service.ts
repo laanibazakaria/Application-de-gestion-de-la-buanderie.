@@ -28,7 +28,7 @@ import { currentPeriod, nextOpeningAfter } from "../domain/opening-hours";
 import { machineQueue, positionOf } from "../domain/queue";
 import type { LaundrySnapshot, Reservation, Role } from "../domain/types";
 
-import { loadSnapshot } from "./laundry-tx";
+import { loadSnapshot, settleIfDue } from "./laundry-tx";
 
 export interface PollHead {
   version: number;
@@ -119,16 +119,19 @@ function virtualEstimate(snapshot: LaundrySnapshot, at: Date, targetMachineId: n
   return e.byReservation.get(virtual.id)?.at ?? null;
 }
 
-export async function buildState(viewer: NonNullable<PollHead["viewer"]>): Promise<LaundryStateView> {
+export type StateViewer = Pick<NonNullable<PollHead["viewer"]>, "id" | "role" | "firstName" | "lastName">;
+
+export async function buildState(viewer: StateViewer): Promise<LaundryStateView> {
   const at = clockNow();
   const isAdmin = viewer.role === "admin";
 
   return getDb().transaction(
     async (tx) => {
-      const [[state], snapshot] = await Promise.all([
-        tx.select({ version: laundryState.version }).from(laundryState).where(eq(laundryState.id, 1)),
-        loadSnapshot(tx),
-      ]);
+      const [state] = await tx
+        .select({ version: laundryState.version })
+        .from(laundryState)
+        .where(eq(laundryState.id, 1));
+      const snapshot = await loadSnapshot(tx);
 
       const studentIds = new Set<string>();
       for (const c of snapshot.runningCycles) studentIds.add(c.studentId);
@@ -140,44 +143,42 @@ export async function buildState(viewer: NonNullable<PollHead["viewer"]>): Promi
 
       const settings = snapshot.settings;
       const since = new Date(at.getTime() - settings.noShowWindowDays * 86_400_000);
-      const [people, unread, noShows] = await Promise.all([
-        studentIds.size
-          ? tx
-              .select({
-                id: users.id,
-                firstName: users.firstName,
-                lastName: users.lastName,
-                room: users.room,
-                schoolId: users.schoolId,
-              })
-              .from(users)
-              .where(inArray(users.id, [...studentIds]))
-          : Promise.resolve([]),
-        tx
-          .select({
-            id: notifications.id,
-            kind: notifications.kind,
-            details: notifications.details,
-            createdAt: notifications.createdAt,
-          })
-          .from(notifications)
-          .where(and(eq(notifications.userId, viewer.id), isNull(notifications.readAt)))
-          .orderBy(notifications.id)
-          .limit(20),
-        isAdmin && studentIds.size
-          ? tx
-              .select({ studentId: reservations.studentId, n: sql<number>`count(*)::int` })
-              .from(reservations)
-              .where(
-                and(
-                  eq(reservations.closeReason, "no_show"),
-                  gt(reservations.closedAt, since),
-                  inArray(reservations.studentId, [...studentIds]),
-                ),
-              )
-              .groupBy(reservations.studentId)
-          : Promise.resolve([]),
-      ]);
+      const people = await (studentIds.size
+        ? tx
+            .select({
+              id: users.id,
+              firstName: users.firstName,
+              lastName: users.lastName,
+              room: users.room,
+              schoolId: users.schoolId,
+            })
+            .from(users)
+            .where(inArray(users.id, [...studentIds]))
+        : Promise.resolve([]));
+      const unread = await tx
+        .select({
+          id: notifications.id,
+          kind: notifications.kind,
+          details: notifications.details,
+          createdAt: notifications.createdAt,
+        })
+        .from(notifications)
+        .where(and(eq(notifications.userId, viewer.id), isNull(notifications.readAt)))
+        .orderBy(notifications.id)
+        .limit(20);
+      const noShows = await (isAdmin && studentIds.size
+        ? tx
+            .select({ studentId: reservations.studentId, n: sql<number>`count(*)::int` })
+            .from(reservations)
+            .where(
+              and(
+                eq(reservations.closeReason, "no_show"),
+                gt(reservations.closedAt, since),
+                inArray(reservations.studentId, [...studentIds]),
+              ),
+            )
+            .groupBy(reservations.studentId)
+        : Promise.resolve([]));
 
       const noShowBy = new Map(noShows.map((x) => [x.studentId, Number(x.n)]));
       const refs = new Map<string, StudentRef>(
@@ -227,7 +228,12 @@ export async function buildState(viewer: NonNullable<PollHead["viewer"]>): Promi
                 student: ref(called.studentId),
               }
             : null;
-        const queue: QueueEntryView[] = machineQueue(m.id, snapshot.activeReservations).map((r, i) => ({
+        // Une machine hors service ne sert personne : on n'y affiche que les étudiants qui la visaient
+        // (prévenus et invités à basculer), pas les « première disponible ».
+        const eligible = machineQueue(m.id, snapshot.activeReservations).filter(
+          (r) => m.status !== "out_of_service" || r.targetMachineId === m.id,
+        );
+        const queue: QueueEntryView[] = eligible.map((r, i) => ({
           reservationId: r.id,
           position: i + 1,
           estimatedAt: iso(estimates.byReservation.get(r.id)?.at),
@@ -319,4 +325,15 @@ export async function buildState(viewer: NonNullable<PollHead["viewer"]>): Promi
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );
+}
+
+/** État initial rendu avec la page (affichage immédiat, sans attendre le premier rafraîchissement). */
+export async function initialState(viewer: StateViewer): Promise<LaundryStateView> {
+  const at = clockNow();
+  const [row] = await getDb()
+    .select({ nextDeadlineAt: laundryState.nextDeadlineAt })
+    .from(laundryState)
+    .where(eq(laundryState.id, 1));
+  if (row?.nextDeadlineAt && row.nextDeadlineAt.getTime() <= at.getTime()) await settleIfDue();
+  return buildState(viewer);
 }
