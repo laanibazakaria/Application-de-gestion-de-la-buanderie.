@@ -22,3 +22,14 @@ describe("formats d'affichage", () => {
     expect(spokenCountdown(0)).toBe("0 seconde");
   });
 });
+
+describe("horaires du formulaire de paramètres", async () => {
+  const { fromHHMM, toHHMM } = await import("@/components/admin/settings-form");
+  it("minutes ↔ HH:MM, minuit en fermeture = fin de journée", () => {
+    expect(toHHMM(420)).toBe("07:00");
+    expect(toHHMM(1440)).toBe("00:00");
+    expect(fromHHMM("22:30", true)).toBe(1350);
+    expect(fromHHMM("00:00", true)).toBe(1440);
+    expect(fromHHMM("00:00", false)).toBe(0);
+  });
+});

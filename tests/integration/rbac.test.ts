@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import * as activity from "@/app/api/admin/activity/route";
+import * as stats from "@/app/api/admin/stats/route";
 import * as extend from "@/app/api/admin/cycles/[id]/extend/route";
 import * as stop from "@/app/api/admin/cycles/[id]/stop/route";
 import * as machine from "@/app/api/admin/machines/[id]/route";
@@ -42,6 +43,7 @@ const id = randomUUID();
 /** Toutes les routes réservées à l'administrateur. */
 const ADMIN_ROUTES: Array<[string, Handler, CallOptions]> = [
   ["GET /admin/activity", activity.GET, {}],
+  ["GET /admin/stats", stats.GET, {}],
   ["POST /admin/cycles/:id/extend", extend.POST, { params: { id }, body: { minutes: 5 } }],
   ["POST /admin/cycles/:id/stop", stop.POST, { params: { id }, body: { mode: "cancelled" } }],
   [

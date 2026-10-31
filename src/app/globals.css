@@ -13,6 +13,8 @@
   --color-line: var(--line);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+  --color-chart: var(--chart);
+  --color-grid: var(--grid);
   --color-free: #15803d;
   --color-waiting: #b45309;
   --color-running: #b91c1c;
@@ -29,6 +31,9 @@
   --line: #cbd5e1;
   --accent: #1d4ed8;
   --accent-fg: #ffffff;
+  /* Série unique des graphiques (validée : contraste ≥ 3:1 sur la surface). */
+  --chart: #2a78d6;
+  --grid: #e2e8f0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,6 +47,8 @@
     --line: #334155;
     --accent: #3b82f6;
     --accent-fg: #0b1120;
+    --chart: #3987e5;
+    --grid: #263247;
   }
 }
 

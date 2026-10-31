@@ -114,8 +114,16 @@ async function main() {
       await q(
         `insert into reservations (id, student_id, target_machine_id, assigned_machine_id, rank, status, created_at, called_at,
            call_deadline_at, confirmed_at, confirm_deadline_at, closed_at, close_reason)
-         values ($1, $2, $3, $3, $4, 'fulfilled', $5, $5, $5::timestamptz + interval '5 minutes', $5, $5::timestamptz + interval '3 minutes', $5, 'fulfilled')`,
-        [resId, studentId, machineId, -rank++, started],
+         values ($1, $2, $3, $3, $4, 'fulfilled', $5::timestamptz - make_interval(mins => $6), $5, $5::timestamptz + interval '5 minutes', $5, $5::timestamptz + interval '3 minutes', $5, 'fulfilled')`,
+        // Attente réaliste entre la réservation et l'appel : 0 à 55 minutes, plus longue aux heures de pointe.
+        [
+          resId,
+          studentId,
+          machineId,
+          -rank++,
+          started,
+          hour >= 18 ? 15 + ((day * 7 + k * 11) % 41) : (day + k * 3) % 12,
+        ],
       );
       await q(
         `insert into cycles (id, machine_id, student_id, reservation_id, started_at, planned_duration_min, planned_end_at, actual_end_at, status, end_reason)
