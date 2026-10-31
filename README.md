@@ -177,14 +177,19 @@ les tests de bout en bout à chaque envoi sur GitHub.
 1. Sur https://vercel.com, **Add New… → Project**, importer le dépôt GitHub.
 2. Laisser les réglages détectés (framework Next.js). La commande de build vient de
    [`vercel.json`](vercel.json) : `pnpm db:migrate && pnpm build` — **les migrations sont appliquées à
-   chaque déploiement** (elles sont idempotentes). Les fonctions tournent à Francfort (`fra1`), en Europe
-   près du Maroc et à côté de la base Neon (même région) : chaque requête SQL ne coûte que quelques millisecondes.
+   chaque déploiement** (elles sont idempotentes). Les fonctions tournent dans la région indiquée par
+   `regions` (actuellement `iad1`, Washington), qui **doit être celle de la base Neon** : une action fait
+   plusieurs requêtes SQL, chacune ne doit coûter que quelques millisecondes.
 3. Ne pas lancer le premier déploiement tout de suite (il échouerait sans base) : passer à l'étape suivante.
 
 ### 6.2 Créer la base Neon
 
 1. Dans le projet Vercel : **Storage → Create Database → Neon** (intégration officielle).
-2. Région : **AWS Europe Central 1 (Frankfurt)** — la même que les fonctions.
+2. Région : de préférence **AWS Europe Central 1 (Frankfurt)**, la plus proche du Maroc. **Faire
+   correspondre ensuite `regions` dans `vercel.json`** : Francfort → `fra1`, US East 1 (Virginie) → `iad1`,
+   Londres → `lhr1`. La base de production actuelle est en US East 1, d'où `iad1` (pour un utilisateur au
+   Maroc, ~0,06 s de plus par chargement, imperceptible ; base et fonctions côte à côte, c'est l'essentiel).
+   La région d'une base Neon ne peut pas être changée après sa création.
 3. Connecter la base au projet pour **Production, Preview et Development**. L'intégration crée
    `DATABASE_URL` (pooled) et `DATABASE_URL_UNPOOLED` (directe), et une branche de base par
    déploiement de prévisualisation.
