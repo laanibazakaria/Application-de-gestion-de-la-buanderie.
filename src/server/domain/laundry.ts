@@ -2,7 +2,7 @@ import { addMinutes } from "@/lib/time";
 
 import { DomainError } from "./errors";
 import { transitionMachine } from "./machine-state";
-import { currentPeriod, isOpenAt, lastClosingAtOrBefore, nextOpeningAfter } from "./opening-hours";
+import { currentPeriod, isOpenAt, lastClosingAtOrBefore } from "./opening-hours";
 import { compareReservations, pickNextForMachine, rankBefore, waitingInOrder } from "./queue";
 import { isActiveReservationStatus, transitionReservation } from "./reservation-state";
 import type {
@@ -134,16 +134,9 @@ export class Laundry {
       if (r.status === "confirmed" && r.confirmDeadlineAt) candidates.push(r.confirmDeadlineAt);
     }
     if (active.some((r) => r.status === "waiting")) {
-      const { hours, timeZone } = this.snapshot;
-      const period = currentPeriod(hours, this.now, timeZone);
-      if (period) candidates.push(period.closesAt);
-      else {
-        // Fermé avec des personnes en file (horaires modifiés) : à traiter à la réouverture,
-        // ou tout de suite si une fermeture les a déjà rendues caduques.
-        const opening = nextOpeningAfter(hours, this.now, timeZone);
-        if (opening) candidates.push(opening);
-      }
-      if (this.closingDueEvent()) candidates.push(this.now);
+      // Ouvert : la file sera annulée à la fermeture du jour. Fermé : elle doit l'être tout de suite.
+      const period = currentPeriod(this.snapshot.hours, this.now, this.snapshot.timeZone);
+      candidates.push(period && !this.closingDueEvent() ? period.closesAt : this.now);
     }
     if (candidates.length === 0) return null;
     return new Date(Math.min(...candidates.map((d) => d.getTime())));
@@ -176,14 +169,28 @@ export class Laundry {
     return processed;
   }
 
+  /**
+   * Une réservation en attente est caduque si une fermeture a eu lieu depuis sa création,
+   * ou si la buanderie est fermée en ce moment (horaires modifiés par l'admin) : on ne
+   * peut pas réserver quand c'est fermé, donc une file existant pendant la fermeture
+   * date forcément d'avant celle-ci.
+   */
+  private isStaleWaiting(r: Reservation, lastClosing: Date | null, open: boolean): boolean {
+    return (
+      r.status === "waiting" &&
+      (!open || (lastClosing !== null && r.createdAt.getTime() < lastClosing.getTime()))
+    );
+  }
+
   private closingDueEvent(): DueEvent | null {
     const { hours, timeZone } = this.snapshot;
     const lastClosing = lastClosingAtOrBefore(hours, this.now, timeZone);
-    if (!lastClosing) return null;
-    const stale = this.activeReservationList().some(
-      (r) => r.status === "waiting" && r.createdAt.getTime() < lastClosing.getTime(),
-    );
-    return stale ? { kind: "closing", at: lastClosing } : null;
+    const open = this.isOpen();
+    const stale = this.activeReservationList().filter((r) => this.isStaleWaiting(r, lastClosing, open));
+    if (stale.length === 0) return null;
+    const closedBeforeAll =
+      lastClosing !== null && stale.every((r) => r.createdAt.getTime() < lastClosing.getTime());
+    return { kind: "closing", at: closedBeforeAll ? lastClosing : this.now };
   }
 
   private earliestDueEvent(): DueEvent | null {
@@ -235,9 +242,13 @@ export class Laundry {
         break;
       }
       case "closing": {
+        const { hours, timeZone } = this.snapshot;
+        const lastClosing = lastClosingAtOrBefore(hours, this.now, timeZone);
+        const open = this.isOpen();
         for (const r of this.activeReservationList()) {
-          if (r.status === "waiting" && r.createdAt.getTime() < event.at.getTime()) {
-            this.closeReservation(r, "cancel", "laundry_closed", event.at);
+          if (this.isStaleWaiting(r, lastClosing, open)) {
+            const at = r.createdAt.getTime() > event.at.getTime() ? r.createdAt : event.at;
+            this.closeReservation(r, "cancel", "laundry_closed", at);
             this.log("reservation.cancelled.laundry_closed", null, "reservation", r.id, {});
             this.notify(r.studentId, "cancelled_laundry_closed", { reservationId: r.id });
           }

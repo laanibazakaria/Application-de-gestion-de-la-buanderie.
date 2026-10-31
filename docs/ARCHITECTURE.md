@@ -1,6 +1,6 @@
 # Architecture
 
-> Document complété au fil des étapes. Version actuelle : modèle de données et règles métier (étape 1).
+> Document complété au fil des étapes. Version actuelle : étape 2 (services et API).
 
 ## Couches
 
@@ -75,6 +75,9 @@ toutes celles qui sont atteintes :
 - un étudiant appelé lors d'un rattrapage reçoit un délai qui **part du moment de l'appel effectif** :
   un appel n'a de sens que s'il peut être vu ;
 - à la fermeture, les réservations en file sont annulées ; personne n'est appelé quand c'est fermé.
+  Si l'admin modifie les horaires et que la buanderie devient fermée, la file est annulée aussitôt
+  (une réservation ne peut pas être créée pendant la fermeture : une file qui existe à ce moment-là
+  est forcément antérieure).
 
 ## Base de données : garanties
 
@@ -86,3 +89,48 @@ toutes celles qui sont atteintes :
 | Ordre de file sans ambiguïté                     | index unique partiel `reservations_waiting_rank_uq`           |
 | Cohérence des statuts et horodatages             | contraintes `CHECK`                                           |
 | Identifiant école unique (insensible à la casse) | index unique sur `lower(school_id)`                           |
+
+## Transaction métier
+
+Chaque action (réserver, confirmer, lancer, piloter…) passe par `withLaundry` (`src/server/services/laundry-tx.ts`) :
+
+```
+BEGIN
+  pg_advisory_xact_lock(clé globale)        ← les actions s'exécutent l'une après l'autre
+  chargement de l'état actif (5 requêtes)
+  settle()                                  ← échéances dépassées traitées d'abord
+  action demandée (moteur Laundry)
+  enregistrement : machines, réservations (rangs en deux phases), cycles,
+                   journal d'activité, messages, laundry_state (version + 1, prochaine échéance)
+COMMIT
+```
+
+Une règle non respectée lève une `DomainError` : tout est annulé et l'API répond avec le code
+d'erreur (409, 403, 422…). Une violation de contrainte en base (qui ne devrait jamais arriver grâce
+au verrou) est traduite en 409 `CONFLICT`.
+
+## Sécurité
+
+| Sujet                   | Mise en œuvre                                                                                                                                                                                         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mots de passe           | argon2id (19 Mio, 2 itérations) ; vérification factice si le compte n'existe pas (temps constant)                                                                                                     |
+| Sessions                | jeton aléatoire de 256 bits dans un cookie `HttpOnly; Secure; SameSite=Lax` ; seule son empreinte SHA-256 est stockée ; 30 jours glissants ; suspension ou nouveau mot de passe = déconnexion partout |
+| Mot de passe temporaire | toute route est refusée (`PASSWORD_CHANGE_REQUIRED`) tant qu'il n'est pas changé                                                                                                                      |
+| Contrôle d'accès        | vérifié par l'enveloppe `route()` sur chaque route (`public`, `user`, `student`, `admin`), puis par le moteur pour les droits fins (sa propre réservation…)                                           |
+| CSRF                    | toute requête autre que GET doit porter un en-tête `Origin` égal à `APP_URL`                                                                                                                          |
+| Validation              | schémas Zod partagés (`src/lib/validation.ts`) pour les corps et paramètres                                                                                                                           |
+| Limitation              | compteurs en base (fenêtre fixe) : connexion 10 / 15 min par compte et 100 / 15 min par IP (tout l'internat peut partager une IP), 60 actions / min par utilisateur ; jamais sur le rafraîchissement  |
+| En-têtes                | `X-Frame-Options: DENY`, `nosniff`, HSTS, `Referrer-Policy`, `Permissions-Policy`                                                                                                                     |
+
+## Horloge de test
+
+La route `/api/test/clock` et le décalage d'horloge n'existent que si **toutes** ces conditions sont
+réunies (`src/server/clock.ts`) ; sinon la route répond 404 et le décalage est ignoré :
+
+1. `E2E_TEST_CLOCK=1` ;
+2. aucune variable système Vercel (`VERCEL`, `VERCEL_ENV`, `VERCEL_URL`) ;
+3. `DATABASE_URL` pointe vers localhost ;
+4. `APP_URL` pointe vers localhost.
+
+Sur Vercel avec Neon, les conditions 2, 3 et 4 sont impossibles : une erreur de configuration sur
+`E2E_TEST_CLOCK` ne peut pas l'activer. Chaque cas est couvert par un test.

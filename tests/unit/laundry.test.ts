@@ -394,7 +394,7 @@ describe("horaires d'ouverture", () => {
     );
   });
 
-  it("personne n'est appelé en dehors des horaires", () => {
+  it("horaires modifiés : une file qui existe pendant la fermeture est annulée, personne n'est appelé", () => {
     const hours: WeeklyHours = Object.fromEntries(
       [1, 2, 3, 4, 5, 6, 7].map((d) => [d, { openMinute: 0, closeMinute: 23 * 60 }]),
     );
@@ -408,7 +408,9 @@ describe("horaires d'ouverture", () => {
       new Date("2026-01-14T22:45:00Z"), // 23:45 locale, fermé
     );
     l.settle();
-    expect(reservationOf(l, "s1")?.status).toBe("waiting");
+    expect(l.changes().reservations[0]).toMatchObject({ status: "cancelled", closeReason: "laundry_closed" });
+    expect(l.changes().notifications.map((n) => n.kind)).toEqual(["cancelled_laundry_closed"]);
+    expect(machineStatus(l, 1)).toBe("free");
   });
 });
 
