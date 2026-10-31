@@ -255,9 +255,32 @@ export async function withLaundry<T>(
   });
 }
 
-/** Traite uniquement les échéances dépassées. Renvoie le nombre d'échéances traitées. */
+/** Traite les échéances dépassées (sans condition). Renvoie le nombre d'échéances traitées. */
 export async function settleDeadlines(db: Database = getDb()): Promise<number> {
   return withLaundry(({ settled }) => settled, db);
+}
+
+/**
+ * Traite les échéances seulement si la prochaine est atteinte, en le vérifiant à
+ * nouveau APRÈS avoir pris le verrou. Quand 100 téléphones rafraîchissent au moment
+ * d'une échéance, le premier la traite ; les autres attendent le verrou, constatent
+ * que `next_deadline_at` est désormais dans le futur et repartent après une seule
+ * lecture, sans rien charger ni écrire.
+ */
+export async function settleIfDue(db: Database = getDb()): Promise<number> {
+  return db.transaction(async (tx) => {
+    await lockLaundry(tx);
+    const at = clockNow();
+    const [state] = await tx
+      .select({ nextDeadlineAt: t.laundryState.nextDeadlineAt })
+      .from(t.laundryState)
+      .where(eq(t.laundryState.id, 1));
+    if (!state?.nextDeadlineAt || state.nextDeadlineAt.getTime() > at.getTime()) return 0;
+    const engine = new Laundry(await loadSnapshot(tx), { now: at, newId: randomUUID });
+    const settled = engine.settle();
+    await persist(tx, engine, at, []);
+    return settled;
+  });
 }
 
 /** Incrémente la version (changement hors moteur visible par les clients, ex. : paramètres). */

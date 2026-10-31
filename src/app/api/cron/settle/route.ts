@@ -9,7 +9,7 @@ import { laundryState } from "@/server/db/schema";
 import { env } from "@/server/env";
 import { errorResponse, json, toErrorResponse } from "@/server/http/route";
 import { purgeRateLimits } from "@/server/rate-limit";
-import { settleDeadlines } from "@/server/services/laundry-tx";
+import { settleIfDue } from "@/server/services/laundry-tx";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export async function GET(req: Request): Promise<Response> {
       .from(laundryState)
       .where(eq(laundryState.id, 1));
     const due = state?.nextDeadlineAt != null && state.nextDeadlineAt.getTime() <= at.getTime();
-    const settled = due ? await settleDeadlines() : 0;
+    const settled = due ? await settleIfDue() : 0;
     // Nettoyage une fois par heure.
     if (at.getUTCMinutes() === 0) await Promise.all([purgeExpiredSessions(), purgeRateLimits()]);
     return json({ settled, due });

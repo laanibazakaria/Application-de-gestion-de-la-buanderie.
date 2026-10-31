@@ -134,3 +134,37 @@ réunies (`src/server/clock.ts`) ; sinon la route répond 404 et le décalage es
 
 Sur Vercel avec Neon, les conditions 2, 3 et 4 sont impossibles : une erreur de configuration sur
 `E2E_TEST_CLOCK` ne peut pas l'activer. Chaque cas est couvert par un test.
+
+## Synchronisation des clients (sans serveur permanent)
+
+Chaque page ouverte rafraîchit l'état par `GET /api/state` (`src/lib/sync/poller.ts`) :
+
+| Situation                                             | Intervalle                                               |
+| ----------------------------------------------------- | -------------------------------------------------------- |
+| Étudiant appelé, présent, ou en tête de file          | 3 s                                                      |
+| Étudiant dans les 3 premières places ; administrateur | 5 s                                                      |
+| Tous les autres cas                                   | 15 s                                                     |
+| Onglet caché                                          | **aucune requête** ; rafraîchissement immédiat au retour |
+| Échéance personnelle proche (fin de cycle, délai)     | juste après l'échéance                                   |
+| Après une action de l'utilisateur, retour du réseau   | immédiat                                                 |
+| Erreur réseau                                         | 2, 4, 8… 30 s                                            |
+
+Côté serveur :
+
+```
+GET /api/state   (If-None-Match: "v<version connue>")
+ 1 requête : laundry_state ⟕ sessions ⟕ users   → version, prochaine échéance, utilisateur actif
+ ├─ pas de session valide                         → 401
+ ├─ échéance atteinte → settleIfDue()             → verrou, re-vérification, traitement une seule fois
+ ├─ version identique                             → 304 sans corps (1 seule requête SQL au total)
+ └─ sinon                                         → état complet (transaction lecture seule REPEATABLE READ)
+```
+
+`settleIfDue()` re-vérifie `next_deadline_at` après avoir pris le verrou : si 50 téléphones
+rafraîchissent au moment d'une échéance, un seul la traite ; les autres ne font qu'une lecture.
+
+Confidentialité : un étudiant voit les positions et heures estimées de toutes les files, mais
+seulement sa propre identité ; l'administrateur voit les noms, chambres et l'avertissement d'absences.
+
+Les comptes à rebours sont calculés par le client à partir des heures de fin stockées en base
+(`plannedEndAt`, `deadlineAt`) et du décalage d'horloge mesuré avec l'en-tête `X-Server-Now`.
