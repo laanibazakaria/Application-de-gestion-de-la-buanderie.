@@ -27,6 +27,7 @@ export function HBarChart({
           </span>
           <span className="flex items-center gap-2" title={r.tooltip}>
             <span
+              role="img"
               tabIndex={0}
               aria-label={r.tooltip}
               className="bg-chart block h-5 rounded-e"
@@ -79,6 +80,7 @@ export function ColumnChart({
               onMouseLeave={() => setHover(null)}
               onFocus={() => setHover(i)}
               onBlur={() => setHover(null)}
+              role="img"
               tabIndex={0}
               aria-label={tooltip(i, v)}
             >

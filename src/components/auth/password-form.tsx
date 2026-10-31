@@ -59,10 +59,11 @@ export function PasswordForm() {
           aria-describedby="regles-mdp"
           className={input}
         />
-        <span id="regles-mdp" className="text-muted text-sm font-normal">
-          {t("rules", { min: PASSWORD_MIN_LENGTH })}
-        </span>
       </label>
+      {/* Hors du libellé : lu comme description (aria-describedby), pas comme nom du champ. */}
+      <p id="regles-mdp" className="text-muted -mt-3 text-sm">
+        {t("rules", { min: PASSWORD_MIN_LENGTH })}
+      </p>
       <label className="flex flex-col gap-1 font-semibold">
         {t("confirm")}
         <input name="confirm" type="password" required autoComplete="new-password" className={input} />

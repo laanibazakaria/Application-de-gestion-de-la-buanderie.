@@ -70,7 +70,15 @@ export function AlertCenter() {
     if (seen.current.has(alert.key)) return;
     seen.current.add(alert.key);
     saveSeen(seen.current);
-    setAlerts((list) => [...list.filter((a) => a.key !== alert.key), alert]);
+    // Une nouvelle alerte pour la même réservation (ex. : « plus qu'une minute ») remplace la précédente.
+    setAlerts((list) => [
+      ...list.filter(
+        (a) =>
+          a.key !== alert.key &&
+          !(alert.confirmReservationId && a.confirmReservationId === alert.confirmReservationId),
+      ),
+      alert,
+    ]);
     playAlert(alert.urgent ? "urgent" : "info");
     vibrate(alert.urgent ? "urgent" : "info");
   }, []);
@@ -86,7 +94,7 @@ export function AlertCenter() {
     for (const r of state.me.reservations) {
       if (r.status === "called") {
         raise({
-          key: `appel:${r.id}`,
+          key: `appel:${r.id}:${r.calledAt}`, // un nouvel appel de la même réservation (après une panne) réalerte
           text: t("called", { number: r.assignedMachineNumber ?? "?", time: formatTime(r.deadlineAt) }),
           urgent: true,
           confirmReservationId: r.id,
@@ -97,7 +105,7 @@ export function AlertCenter() {
         const remaining = Date.parse(r.deadlineAt) - now;
         if (remaining > 0 && remaining <= 60_000) {
           raise({
-            key: `minute:${r.id}:${r.status}`,
+            key: `minute:${r.id}:${r.status}:${r.deadlineAt}`,
             text: t(r.status === "called" ? "oneMinute" : "oneMinuteStart", {
               number: r.assignedMachineNumber ?? "?",
             }),

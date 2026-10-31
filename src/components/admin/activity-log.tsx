@@ -99,7 +99,12 @@ export function ActivityLog() {
           ))}
         </select>
       </label>
-      <div className="border-line bg-surface overflow-x-auto rounded-xl border">
+      <div
+        className="border-line bg-surface overflow-x-auto rounded-xl border"
+        tabIndex={0}
+        role="region"
+        aria-label={t("title")}
+      >
         <table className="w-full text-sm">
           <thead className="bg-surface-2">
             <tr>
