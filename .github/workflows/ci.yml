@@ -1,0 +1,53 @@
+# Vérifications à chaque envoi : formatage, lint, typage, tests unitaires et d'intégration,
+# build, puis tests de bout en bout (Playwright) sur un PostgreSQL 16 éphémère.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verifications:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: buanderie
+          POSTGRES_PASSWORD: buanderie
+          POSTGRES_DB: buanderie_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U buanderie" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://buanderie:buanderie@localhost:5432/buanderie_test
+      E2E_DATABASE_URL: postgres://buanderie:buanderie@localhost:5432/buanderie_e2e
+      DATABASE_URL: postgres://buanderie:buanderie@localhost:5432/buanderie_test
+      CRON_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      APP_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Base de bout en bout
+        run: PGPASSWORD=buanderie psql -h localhost -U buanderie -d buanderie_test -c "create database buanderie_e2e"
+      - name: Formatage, lint, typage, tests, build
+        run: pnpm check
+      - name: Navigateur Playwright
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Tests de bout en bout
+        run: E2E_SKIP_BUILD=1 pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: rapport-playwright
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
