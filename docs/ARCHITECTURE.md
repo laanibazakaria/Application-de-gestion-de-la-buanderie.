@@ -1,27 +1,73 @@
 # Architecture
 
-> Document complété au fil des étapes. Version actuelle : étape 2 (services et API).
+## Vue d'ensemble
+
+```mermaid
+flowchart LR
+    subgraph Navigateurs["Téléphones et ordinateurs"]
+        E["Étudiant<br/>(rafraîchissement 3 / 5 / 15 s,<br/>arrêté si l'onglet est caché)"]
+        A["Administrateur<br/>(5 s)"]
+    end
+    subgraph Vercel["Vercel — fonctions Next.js (fra1)"]
+        P["Pages (rendu serveur<br/>+ état initial)"]
+        S["GET /api/state<br/>304 en 1 requête SQL"]
+        C["Actions /api/**<br/>(droits, CSRF, validation)"]
+        K["GET /api/cron/settle"]
+    end
+    N[("Neon PostgreSQL 16<br/>(Francfort)")]
+    J["cron-job.org<br/>toutes les 15 min"]
+    E & A --> P & S & C
+    J --> K
+    P & S & C & K --> N
+```
+
+Aucun processus ne tourne en permanence. Tout l'état — y compris les échéances (fin de cycle, délais
+de présentation et de lancement, fermeture) — est en base, sous forme d'**heures absolues**. Chaque
+requête commence par traiter les échéances dépassées ; cron-job.org n'est qu'un filet de sécurité pour
+les moments où personne n'a la page ouverte. Un redémarrage, une mise en veille de la base ou un
+nouveau déploiement ne perdent donc rien.
 
 ## Couches
 
 ```
-src/server/domain/   Logique métier pure, sans entrée/sortie (testée unitairement)
-  machine-state.ts      Machine à états d'une machine à laver
-  reservation-state.ts  Machine à états d'une réservation
-  queue.ts              Ordre de file, « première disponible », positions, rangs
-  estimate.ts           Heures de disponibilité estimées
-  opening-hours.ts      Horaires d'ouverture (Africa/Casablanca)
-  laundry.ts            Moteur : commandes + traitement des échéances (settle)
-src/server/db/       Schéma Drizzle, connexion, migrations
-drizzle/             Migrations SQL versionnées
+src/server/domain/      Logique métier pure, sans entrée/sortie (testée unitairement)
+  machine-state.ts        Machine à états d'une machine à laver
+  reservation-state.ts    Machine à états d'une réservation
+  queue.ts                Ordre de file, « première disponible », positions, rangs
+  estimate.ts             Heures de disponibilité estimées
+  opening-hours.ts        Horaires d'ouverture (Africa/Casablanca)
+  laundry.ts              Moteur : commandes + traitement des échéances (settle)
+src/server/services/    Transactions métier (laundry-tx), état (state-service), comptes, paramètres,
+                        statistiques, historique
+src/server/http/        Enveloppe commune des routes : CSRF, session, rôle, limitation, validation, erreurs
+src/server/auth/        Mots de passe, sessions, protection des pages
+src/server/db/          Schéma Drizzle, connexion (pg + attachDatabasePool sur Vercel), migrations
+src/lib/                Partagé client/serveur : validation Zod, types de l'état, synchronisation, formats
+src/components/         Interface React (laundry/ : commun et étudiant ; admin/ ; ui/)
+src/app/                Pages et routes API (App Router)
 ```
 
 Le moteur `Laundry` reçoit un instantané de l'état actif (machines, cycles en cours, réservations
 actives, paramètres, horaires) et une heure `now`. Il applique les règles et renvoie la liste des
-modifications, des entrées du journal et des messages à afficher aux étudiants. Le service (étape 2)
-le charge dans une transaction, sous un verrou global, et enregistre le résultat.
+modifications, des entrées du journal et des messages à afficher aux étudiants. Le service le charge
+dans une transaction, sous un verrou global, et enregistre le résultat. Toute la logique métier est
+donc testable sans base de données (`tests/unit/laundry.test.ts`).
 
 ## Machine à états : machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> free
+    free --> awaiting_student : call (file non vide)
+    awaiting_student --> free : release_call (expiration / annulation, file vide)
+    awaiting_student --> running : start_cycle
+    free --> running : start_cycle (admin, étudiant présent)
+    running --> running : extend_cycle
+    running --> free : end_cycle (fin prévue / anticipée / annulation)
+    free --> out_of_service : disable
+    awaiting_student --> out_of_service : disable
+    out_of_service --> free : enable
+```
 
 | Depuis             | Événement      | Vers               | Déclencheur                                                     |
 | ------------------ | -------------- | ------------------ | --------------------------------------------------------------- |
@@ -41,6 +87,24 @@ tourne ne peut pas être mise hors service : il faut d'abord terminer ou annuler
 Couleurs et icônes : libre = vert, en attente de l'étudiant = orange, en cours = rouge, hors service = gris.
 
 ## Machine à états : réservation
+
+```mermaid
+stateDiagram-v2
+    [*] --> waiting
+    waiting --> called : call
+    called --> confirmed : confirm (« Je suis là »)
+    confirmed --> fulfilled : fulfill (cycle lancé)
+    called --> expired : expire (5 min)
+    confirmed --> expired : expire (3 min)
+    called --> waiting : uncall (machine hors service)
+    confirmed --> waiting : uncall
+    waiting --> cancelled : cancel
+    called --> cancelled : cancel
+    confirmed --> cancelled : cancel
+    fulfilled --> [*]
+    expired --> [*]
+    cancelled --> [*]
+```
 
 | Depuis                           | Événement                               | Vers                      |
 | -------------------------------- | --------------------------------------- | ------------------------- |
@@ -79,16 +143,12 @@ toutes celles qui sont atteintes :
   (une réservation ne peut pas être créée pendant la fermeture : une file qui existe à ce moment-là
   est forcément antérieure).
 
-## Base de données : garanties
+## Base de données
 
-| Garantie                                         | Mécanisme                                                     |
-| ------------------------------------------------ | ------------------------------------------------------------- |
-| Un seul cycle en cours par machine               | index unique partiel `cycles_one_running_per_machine_uq`      |
-| Un seul cycle en cours par étudiant              | index unique partiel `cycles_one_running_per_student_uq`      |
-| Un seul étudiant appelé/présent par machine      | index unique partiel `reservations_one_called_per_machine_uq` |
-| Ordre de file sans ambiguïté                     | index unique partiel `reservations_waiting_rank_uq`           |
-| Cohérence des statuts et horodatages             | contraintes `CHECK`                                           |
-| Identifiant école unique (insensible à la casse) | index unique sur `lower(school_id)`                           |
+Schéma complet, diagramme et liste des contraintes : [`SCHEMA.md`](SCHEMA.md). En résumé, des index
+uniques partiels garantissent au plus un cycle en cours par machine et par étudiant, au plus un
+étudiant appelé par machine, et un rang unique dans la file ; des contraintes `CHECK` garantissent la
+cohérence des statuts et des horodatages.
 
 ## Transaction métier
 
@@ -168,3 +228,49 @@ seulement sa propre identité ; l'administrateur voit les noms, chambres et l'av
 
 Les comptes à rebours sont calculés par le client à partir des heures de fin stockées en base
 (`plannedEndAt`, `deadlineAt`) et du décalage d'horloge mesuré avec l'en-tête `X-Server-Now`.
+
+## Interface
+
+- **Rendu** : chaque page est rendue côté serveur avec l'état courant (affichage immédiat, ~0,9 s
+  après la connexion mesuré sur téléphone simulé), puis le `StatePoller` prend le relais.
+- **Alertes** (`alert-center.tsx`) : remplacent le Web Push. Sources : l'état (appel), les échéances
+  connues à l'avance (1 minute avant l'expiration, fin de cycle — surveillées localement à partir des
+  heures du serveur) et les messages enregistrés par le serveur (`notifications`), affichés au retour
+  même si l'événement a eu lieu en l'absence de l'étudiant. Son Web Audio (débloqué au premier geste),
+  vibration, titre clignotant, fenêtre plein écran (`alertdialog`) pour l'appel.
+- **Accessibilité** : statut = couleur + icône + texte ; contrastes AA vérifiés ; focus visible ;
+  navigation au clavier (y compris le glisser-déposer, via dnd-kit et des boutons ↑/↓) ; libellés et
+  rôles ARIA ; `prefers-reduced-motion` respecté. Contrôlé automatiquement par axe-core sur 10 écrans.
+- **Thème** : clair et sombre (`prefers-color-scheme`), jetons de couleur dans `globals.css`.
+
+## Internationalisation
+
+Textes dans `messages/fr.json` (next-intl), aucun texte en dur dans les composants. `lang` et `dir`
+sont posés sur `<html>` selon la langue ; la mise en page utilise les propriétés CSS logiques
+(`ms-`, `me-`, `ps-`, `text-start`…), donc l'arabe s'affichera de droite à gauche sans retouche. Les
+heures passent par `Intl.DateTimeFormat` avec le fuseau `Africa/Casablanca` (base IANA : les
+changements d'heure du Ramadan sont pris en compte) au format 24 h. Un test vérifie que chaque code
+d'erreur, action du journal et type de message a son texte.
+
+## Stratégie de tests
+
+| Niveau       | Outil                         | Ce qui est couvert                                                                                                                                                                                 |
+| ------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unitaires    | Vitest                        | Machines à états (toutes les combinaisons), moteur métier, file, estimations, horaires et fuseau, rythme et comportement du rafraîchissement (horloge simulée), formats, cohérence des traductions |
+| Intégration  | Vitest + PostgreSQL réel      | Toutes les routes, matrice des droits, CSRF, limitation, concurrence, redémarrage, tâche planifiée, nombre de requêtes SQL du `304`, contraintes de la base                                        |
+| Bout en bout | Playwright (téléphone simulé) | Parcours étudiant et administrateur, expiration au profit du suivant, synchronisation entre téléphones, hors ligne, onglet caché, accès, accessibilité (axe-core)                                  |
+
+## Choix importants
+
+| Choix                                                           | Raison                                                                                                     |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Next.js sur Vercel, PostgreSQL Neon                             | Contrainte d'hébergement gratuit ; Neon s'intègre nativement à Vercel                                      |
+| Échéances traitées à la lecture + cron de secours               | Pas de processus permanent sur Vercel ; la base est la seule source de vérité, un redémarrage ne perd rien |
+| Verrou consultatif global par transaction                       | Quelques centaines d'actions par jour : la sérialisation ne coûte rien et supprime toute course            |
+| Moteur métier pur (`Laundry`)                                   | Toutes les règles testables sans base ; services minces                                                    |
+| Rafraîchissement avec version + `304`                           | Pas de service temps réel externe ; une seule requête SQL quand rien ne change                             |
+| Rafraîchissement arrêté quand l'onglet est caché                | Quotas gratuits ; contrepartie : pas d'alerte écran verrouillé (voir README §10)                           |
+| Statut `fulfilled` en plus des cinq du cahier des charges       | Distinguer une réservation devenue cycle d'une réservation active                                          |
+| Appel lors d'un rattrapage : délai à partir de l'appel effectif | Ne jamais éliminer un étudiant « dans le passé » sans qu'il ait pu voir l'appel                            |
+| File visible de tous, identités visibles seulement par l'admin  | Confidentialité des étudiants                                                                              |
+| Tâche planifiée toutes les 15 min (et non chaque minute)        | Laisser Neon se mettre en veille : quota de calcul gratuit (README §7–8)                                   |
