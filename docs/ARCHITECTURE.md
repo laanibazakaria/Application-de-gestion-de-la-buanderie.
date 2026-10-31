@@ -8,13 +8,13 @@ flowchart LR
         E["Étudiant<br/>(rafraîchissement 3 / 5 / 15 s,<br/>arrêté si l'onglet est caché)"]
         A["Administrateur<br/>(5 s)"]
     end
-    subgraph Vercel["Vercel — fonctions Next.js (fra1)"]
+    subgraph Vercel["Vercel — fonctions Next.js (iad1, même région que la base)"]
         P["Pages (rendu serveur<br/>+ état initial)"]
         S["GET /api/state<br/>304 en 1 requête SQL"]
         C["Actions /api/**<br/>(droits, CSRF, validation)"]
         K["GET /api/cron/settle"]
     end
-    N[("Neon PostgreSQL 16<br/>(Francfort)")]
+    N[("Neon PostgreSQL 16<br/>(AWS US East 1)")]
     J["cron-job.org<br/>toutes les 15 min"]
     E & A --> P & S & C
     J --> K
